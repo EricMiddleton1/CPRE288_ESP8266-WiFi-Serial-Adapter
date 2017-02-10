@@ -12,7 +12,7 @@
 
 #define NETWORK_UPDATE_RATE	5
 
-#define user_procTaskQueueLen    1
+#define user_procTaskQueueLen    10
 
 
 #define BAUD	921600
@@ -30,19 +30,15 @@
 #define DHCP_IP_START	"192.168.1.10"
 #define DHCP_IP_END		"192.168.1.15"
 
-#define TCP_MAX_PACKET_SIZE		1460
-#define UART_TX_BUFFER_SIZE		(TCP_MAX_PACKET_SIZE * 14)
 #define UART_RX_BUFFER_SIZE		(1024 * 8)
+#define UART_TX_BUFFER_SIZE		(128)
 
-static volatile uint8 *_txBuffer;
-static volatile uint16 _txBufferSize;
-static volatile uint16 _txBufferLen;
-
-static volatile uint8 *_rxBuffer;
+static uint8 *_rxBuffer;
+static uint8 *_txBuffer;
 
 os_event_t    user_procTaskQueue[user_procTaskQueueLen];
 static void uart_task(os_event_t *events);
-static void tcp_recvHandler(uint8 *data, uint16 len);
+static void tcp_recvHandler(uint16 len);
 
 static volatile os_timer_t networkTimer;
 static volatile uint8 _ledSet;
@@ -50,6 +46,7 @@ static volatile uint8 _ledSet;
 static void wifi_handler(System_Event_t *event);
 
 static volatile int uartCount = 0;
+static volatile uint8 _uartTxFlag;
 
 void network_task(void *arg) {
 	static uint8_t ledState = 0;
@@ -110,29 +107,30 @@ static void uart_task(os_event_t *events)
 
 
 		
-		case UART_SIG_TXTO:
+		case UART_SIG_TXTO: {
 			//Transmit FIFO near empty
 
-			if(_txBufferLen > 0) {
+			//Grab as much as we can send
+			uint8 sendSpace = uart_getTxFifoLen();
+			uint8 toSend = tcp_receive(_txBuffer, sendSpace);
+
+			if(toSend > 0) {
 				//Fill the FIFO
-				uint16 sent = uart0_send_nowait((uint8*)_txBuffer, _txBufferLen);
+				uart0_send_nowait(_txBuffer, toSend);
 
-				if(sent < _txBufferLen) {
-					memmove((uint8*)_txBuffer, (uint8*)_txBuffer + sent,
-						_txBufferLen - sent);
-					_txBufferLen -= sent;
-
-					uart_set_txto();
-				}
-				else {
-					_txBufferLen = 0;
-					uart_clear_txto();
-				}
+				uart_set_txto();
+				_ledSet = 1;
 			}
+			else {
+				uart_clear_txto();
+
+				_uartTxFlag = 0;
+			}
+		}
 		break;
 
     default:
-      os_delay_us(10);
+      //os_delay_us(10);
       break;
     }
 
@@ -202,27 +200,18 @@ void wifi_handler(System_Event_t *event) {
 	}
 }
 
-void tcp_recvHandler(uint8 *data, uint16 len) {
-	if(_txBufferLen == 0) {
-		uint16 sent = uart0_send_nowait(data, len);
+void tcp_recvHandler(uint16 len) {
+	if(_uartTxFlag == 0) {
+		//Grab as much as we can currently send
+		uint8 sendSpace = uart_getTxFifoLen();
+		uint8 toSend = tcp_receive(_txBuffer, sendSpace);
 
-		if(sent < len) {
-			//memmove((uint8*)_txBuffer, (uint8*)_txBuffer + sent,
-				//_txBufferLen - sent);
-			//_txBufferLen -= sent;
-			os_memcpy((uint8*)_txBuffer, data + sent, len - sent);
-			_txBufferLen = len - sent;
-
-			uart_set_txto();
-		}
-	}
-	else {
-		os_memcpy((uint8*)_txBuffer + _txBufferLen, data, len);
-		_txBufferLen += len;
+		uart0_send_nowait(_txBuffer, toSend);
 		uart_set_txto();
-	}
 
-	_ledSet = 1;
+		_uartTxFlag = 1;
+		_ledSet = 1;
+	}
 }
 
 //Init function 
@@ -244,12 +233,10 @@ user_init()
 		//Initialize UART
 		uart_init(BAUD, BAUD);
 
-		//Initialize UART TX buffer
-		_txBuffer = (uint8*)os_malloc(UART_TX_BUFFER_SIZE);
-		_txBufferSize = UART_TX_BUFFER_SIZE;
-		_txBufferLen = 0;
-		
 		_rxBuffer = (uint8*)os_malloc(UART_RX_BUFFER_SIZE);
+		_txBuffer = (uint8*)os_malloc(UART_TX_BUFFER_SIZE);
+
+		_uartTxFlag = 0;
 
 		//Initialize WiFi
 		wifi_init();

@@ -150,6 +150,7 @@ void uart_debugSend(char *str);
 void uart_set_txto();
 void uart_clear_txto();
 uint16 uart_getFifoLen();
+uint8 uart_getTxFifoLen();
 
 
 ///////////////////////////////////////

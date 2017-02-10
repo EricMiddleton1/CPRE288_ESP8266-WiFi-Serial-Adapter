@@ -119,6 +119,12 @@ uint16 uart_getFifoLen() {
 	return fifo_len;
 }
 
+uint8 uart_getTxFifoLen() {
+	uint8 fifo_len = (READ_PERI_REG(UART_STATUS(UART0)) >> UART_TXFIFO_CNT_S)
+		& UART_TXFIFO_CNT;
+	
+	return fifo_len;
+}
 
 /******************************************************************************
  * FunctionName : uart1_tx_one_char

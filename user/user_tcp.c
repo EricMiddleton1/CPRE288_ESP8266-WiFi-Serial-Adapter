@@ -11,7 +11,7 @@
 
 #define TCP_MAX_PACKET	(1460)
 #define TCP_SEND_BUFFER_SIZE	(4096)
-#define TCP_RECV_BUFFER_SIZE	(4*TCP_MAX_PACKET)
+#define TCP_RECV_BUFFER_SIZE	(14*TCP_MAX_PACKET)
 
 #define TCP_RECV_HOLD_LIMIT	(5*TCP_MAX_PACKET)
 
@@ -22,6 +22,10 @@ struct Connection {
 
 	uint8 *sendBuffer;
 	uint16 sendSize, sendLen;
+
+	uint8 *recvBuffer;
+	uint16 recvSize, recvLen;
+	uint8 recvHold;
 
 	ReceiveHandler recvHandler;
 
@@ -47,6 +51,11 @@ void tcp_start(uint16 port) {
 	_tcpConn.sendBuffer = (uint8*)os_malloc(TCP_SEND_BUFFER_SIZE);
 	_tcpConn.sendSize = TCP_SEND_BUFFER_SIZE;
 	_tcpConn.sendLen = 0;
+
+	_tcpConn.recvBuffer = (uint8*)os_malloc(TCP_RECV_BUFFER_SIZE);
+	_tcpConn.recvSize = TCP_RECV_BUFFER_SIZE;
+	_tcpConn.recvLen = 0;
+	_tcpConn.recvHold = 0;
 
 	_tcpConn.pConn = NULL;
 
@@ -97,6 +106,27 @@ void tcp_send(uint8* buffer, uint16 len) {
 	else {
 		uart_debugSend("[Send] (Not connected)\r\n");
 	}
+}
+
+uint16 tcp_receive(uint8 *buffer, uint16 size) {
+	uint16 recvAmt = _tcpConn.recvLen;
+	if(recvAmt > size)
+		recvAmt = size;
+	
+	memcpy(buffer, _tcpConn.recvBuffer, recvAmt);
+
+	if(recvAmt != _tcpConn.recvLen) {
+		memmove(_tcpConn.recvBuffer, _tcpConn.recvBuffer + recvAmt, (_tcpConn.recvLen - recvAmt));
+	}
+
+	_tcpConn.recvLen -= recvAmt;
+
+	if( (_tcpConn.recvHold == 1) && (_tcpConn.recvLen < TCP_RECV_HOLD_LIMIT) ) {
+		espconn_recv_unhold(_tcpConn.pConn);
+		_tcpConn.recvHold = 0;
+	}
+
+	return recvAmt;
 }
 
 uint16 __send(struct Connection *conn, uint8 *data, uint16 len) {
@@ -176,12 +206,18 @@ void __reconnectHandler(void *arg, sint8 err) {
 
 void __recvHandler(void *arg, char *data, unsigned short len) {
 	struct Connection *conn = (struct Connection*)(((struct espconn*)arg)->reverse);
+	
+	memcpy(conn->recvBuffer + conn->recvLen, data, len);
+	conn->recvLen += len;
 
-	if(conn->recvHandler != NULL) {
-		conn->recvHandler(data, len);
+	if( (conn->recvLen > TCP_RECV_HOLD_LIMIT) && (conn->recvHold == 0) ) {
+		espconn_recv_hold(conn->pConn);
+		conn->recvHold = 1;
 	}
 
-	//TODO: Hold on/off
+	if(conn->recvHandler != NULL) {
+		conn->recvHandler(len);
+	}
 }
 
 void __sentHandler(void *arg) {
