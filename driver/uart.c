@@ -87,6 +87,10 @@ uint16 uart_get(uint8 *out, uint16 len) {
   uint16 amount = (_rxLen < len) ? _rxLen : len;
 
   memcpy(out, (uint8*)_rxBuffer, amount);
+
+	if(amount != _rxLen) {
+		memcpy((uint8*)_rxBuffer, (uint8*)_rxBuffer + amount, _rxLen - amount);
+	}
   _rxLen -= amount;
 
 	//uart_rx_intr_enable(UART0);
@@ -119,11 +123,11 @@ uint16 uart_getFifoLen() {
 	return fifo_len;
 }
 
-uint8 uart_getTxFifoLen() {
+uint8 uart_getTxFifoAvail() {
 	uint8 fifo_len = (READ_PERI_REG(UART_STATUS(UART0)) >> UART_TXFIFO_CNT_S)
 		& UART_TXFIFO_CNT;
 	
-	return fifo_len;
+	return UART_FIFO_LEN - fifo_len;
 }
 
 /******************************************************************************
@@ -231,17 +235,14 @@ uart0_rx_intr_handler(void *para)
 	/*IN NON-OS VERSION SDK, DO NOT USE "ICACHE_FLASH_ATTR" FUNCTIONS IN THE WHOLE HANDLER PROCESS*/
 	/*ALL THE FUNCTIONS CALLED IN INTERRUPT HANDLER MUST BE DECLARED IN RAM */
 	/*IF NOT , POST AN EVENT AND PROCESS IN SYSTEM TASK */
-    if(UART_FRM_ERR_INT_ST == (READ_PERI_REG(UART_INT_ST(uart_no)) & UART_FRM_ERR_INT_ST)){
-        WRITE_PERI_REG(UART_INT_CLR(uart_no), UART_FRM_ERR_INT_CLR);
-    }
-		else if(UART_RXFIFO_FULL_INT_ST == (READ_PERI_REG(UART_INT_ST(uart_no)) & UART_RXFIFO_FULL_INT_ST)){
+		if(UART_RXFIFO_FULL_INT_ST == (READ_PERI_REG(UART_INT_ST(uart_no)) & UART_RXFIFO_FULL_INT_ST)){
 				//recv = 1;
 				//intMask = UART_RXFIFO_FULL_INT_CLR;
 
 				//Disable this interrupt until we read the data from the fifo
 				//CLEAR_PERI_REG_MASK(UART_INT_ENA(UART0), UART_RXFIFO_FULL_INT_ENA | UART_RXFIFO_TOUT_INT_ENA);
 
-        system_os_post(UART_TASK_PRIORITY, UART_SIG_RECV, 0);
+        //system_os_post(UART_TASK_PRIORITY, UART_SIG_RECV, 0);
 
 				//Clear interrupt flag
 				//WRITE_PERI_REG(UART_INT_CLR(UART0), UART_RXFIFO_FULL_INT_CLR);
@@ -258,7 +259,7 @@ uart0_rx_intr_handler(void *para)
 				//Disable this interrupt until we read the data from the fifo
 				//CLEAR_PERI_REG_MASK(UART_INT_ENA(UART0), UART_RXFIFO_TOUT_INT_ENA | UART_RXFIFO_FULL_INT_ENA);
 
-        system_os_post(UART_TASK_PRIORITY, UART_SIG_RECV, 0);
+        //system_os_post(UART_TASK_PRIORITY, UART_SIG_RECV, 0);
 
 				//Clear interrupt flag
 				WRITE_PERI_REG(UART_INT_CLR(UART0), UART_RXFIFO_TOUT_INT_CLR);
@@ -392,8 +393,8 @@ uint16 uart0_send_nowait(uint8 *buffer, uint16 len) {
 
 	uint8 written = 0;
 
-	if(fifo_cnt < 126) {
-		uint8 avail = 126 - fifo_cnt;
+	if(fifo_cnt < UART_FIFO_LEN) {
+		uint8 avail = UART_FIFO_LEN - fifo_cnt;
 		if(avail > len)
 			avail = len;
 

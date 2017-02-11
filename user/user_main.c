@@ -30,7 +30,7 @@
 #define DHCP_IP_START	"192.168.1.10"
 #define DHCP_IP_END		"192.168.1.15"
 
-#define UART_RX_BUFFER_SIZE		(1024 * 8)
+#define UART_RX_BUFFER_SIZE		(1024)
 #define UART_TX_BUFFER_SIZE		(128)
 
 static uint8 *_rxBuffer;
@@ -65,6 +65,19 @@ void network_task(void *arg) {
 			gpio_output_set(0, BIT0, BIT0, 0);
 		}
 	}
+
+/*
+	static int i = 0;
+	if(i == 0) {
+		i = 100;
+
+		char msg[128];
+		os_sprintf(msg, "[Heap] %d\r\n", 
+			(int)system_get_free_heap_size());
+		uart_debugSend(msg);
+	}
+	i--;
+*/
 }
 
 //Task to process events
@@ -111,7 +124,7 @@ static void uart_task(os_event_t *events)
 			//Transmit FIFO near empty
 
 			//Grab as much as we can send
-			uint8 sendSpace = uart_getTxFifoLen();
+			uint8 sendSpace = uart_getTxFifoAvail();
 			uint8 toSend = tcp_receive(_txBuffer, sendSpace);
 
 			if(toSend > 0) {
@@ -203,7 +216,7 @@ void wifi_handler(System_Event_t *event) {
 void tcp_recvHandler(uint16 len) {
 	if(_uartTxFlag == 0) {
 		//Grab as much as we can currently send
-		uint8 sendSpace = uart_getTxFifoLen();
+		uint8 sendSpace = uart_getTxFifoAvail();
 		uint8 toSend = tcp_receive(_txBuffer, sendSpace);
 
 		uart0_send_nowait(_txBuffer, toSend);

@@ -150,11 +150,11 @@ void uart_debugSend(char *str);
 void uart_set_txto();
 void uart_clear_txto();
 uint16 uart_getFifoLen();
-uint8 uart_getTxFifoLen();
+uint8 uart_getTxFifoAvail();
 
 
 ///////////////////////////////////////
-#define UART_FIFO_LEN  128  //define the tx fifo length
+#define UART_FIFO_LEN  126  //define the tx fifo length
 #define UART_TX_EMPTY_THRESH_VAL 0x10
 
 

@@ -3,6 +3,7 @@
 #include "ip_addr.h"
 #include "osapi.h"
 #include "espconn.h"
+#include "os_type.h"
 #include <mem.h>
 #include <string.h>
 
@@ -10,12 +11,12 @@
 #include "driver/uart.h"
 
 #define TCP_MAX_PACKET	(1460)
-#define TCP_SEND_BUFFER_SIZE	(4096)
-#define TCP_RECV_BUFFER_SIZE	(14*TCP_MAX_PACKET)
+#define TCP_SEND_BUFFER_SIZE	(1024 * 20)
+#define TCP_RECV_BUFFER_SIZE	(10*TCP_MAX_PACKET)
 
 #define TCP_RECV_HOLD_LIMIT	(5*TCP_MAX_PACKET)
 
-#define MAX_SEND_COUNT	(7)	
+#define MAX_SEND_COUNT	(2)
 
 struct Connection {
 	struct espconn *pConn;
@@ -36,6 +37,8 @@ static struct espconn _tcpServer;
 
 static struct Connection _tcpConn;
 
+static volatile os_timer_t _sendTimer;
+
 //Callbacks
 static void __connectHandler(void *arg);
 static void __disconnectHandler(void *arg);
@@ -44,10 +47,15 @@ static void __recvHandler(void *arg, char *data, unsigned short len);
 static void __sentHandler(void *arg);
 static void __writeHandler(void *arg);
 
+static void __sendTimerHandler(void *arg);
+
 static uint16 __send(struct Connection *conn, uint8 *data, uint16 len);
 
 
 void tcp_start(uint16 port) {
+	os_timer_disarm(&_sendTimer);
+	os_timer_setfn(&_sendTimer, (os_timer_func_t*)__sendTimerHandler, NULL);
+
 	_tcpConn.sendBuffer = (uint8*)os_malloc(TCP_SEND_BUFFER_SIZE);
 	_tcpConn.sendSize = TCP_SEND_BUFFER_SIZE;
 	_tcpConn.sendLen = 0;
@@ -90,15 +98,25 @@ void tcp_send(uint8* buffer, uint16 len) {
 			uint16 sendAmt = __send(&_tcpConn, buffer, len);
 
 			if(sendAmt < len) {
-				memmove(_tcpConn.sendBuffer + _tcpConn.sendLen, buffer + sendAmt, len - sendAmt);
-				_tcpConn.sendLen = len - sendAmt;
+				if((sendAmt + _tcpConn.sendLen) > _tcpConn.sendSize) {
+					uart_debugSend("[tcp_send] send buffer full!\r\n");
+				}
+				else {
+					memcpy(_tcpConn.sendBuffer, buffer + sendAmt, len - sendAmt);
+					_tcpConn.sendLen = len - sendAmt;
+				}
 			}
 		}
 		else {
-			memmove(_tcpConn.sendBuffer + _tcpConn.sendLen, buffer, len);
-			_tcpConn.sendLen += len;
+			if((_tcpConn.sendLen + len) > _tcpConn.sendSize) {
+				uart_debugSend("[tcp_send] send buffer full!\r\n");
+			}
+			else {
+				memcpy(_tcpConn.sendBuffer + _tcpConn.sendLen, buffer, len);
+				_tcpConn.sendLen += len;
+			}
 
-			char msg[128];
+			//char msg[128];
 			//os_sprintf(msg, "[tcp_send] Defferred (%d)\r\n", (int)_tcpConn.sendLen);
 			//__debug(msg);
 		}
@@ -130,12 +148,13 @@ uint16 tcp_receive(uint8 *buffer, uint16 size) {
 }
 
 uint16 __send(struct Connection *conn, uint8 *data, uint16 len) {
-	conn->sendCount++;
+	//conn->sendCount++;
 
 	uint16 sendAmt = len;
 	if(sendAmt > TCP_MAX_PACKET)
 		sendAmt = TCP_MAX_PACKET;
-	
+
+
 	if(conn->pConn == NULL) {
 		uart_debugSend("[__send] NULL espconn\r\n");
 
@@ -143,7 +162,16 @@ uint16 __send(struct Connection *conn, uint8 *data, uint16 len) {
 	}
 	
 	sint8 retval = espconn_send(conn->pConn, data, sendAmt);
-	
+/*
+	char msg[128];
+	os_sprintf(msg, "[__send] Sent %d\r\n", (int)sendAmt);
+	uart_debugSend(msg);
+*/	
+
+	if((retval != 0) && (conn->sendCount == 0)) {
+		os_timer_arm(&_sendTimer, 1, 0);
+	}
+
 	if(retval == ESPCONN_ARG) {
 		char msg[128];
 		os_sprintf(msg, "[__send] ESPCONN_ARG: %d, %d\r\n", (int)data, (int)sendAmt);
@@ -159,9 +187,11 @@ uint16 __send(struct Connection *conn, uint8 *data, uint16 len) {
 		sendAmt = 0;
 	}
 	else {
-		char msg[128];
-		os_sprintf(msg, "[__send] %d sent\r\n", (int)sendAmt);
-		uart_debugSend(msg);
+		//char msg[128];
+		//os_sprintf(msg, "[__send] %d sent\r\n", (int)sendAmt);
+		//uart_debugSend(msg);
+
+		conn->sendCount++;
 	}
 
 	return sendAmt;
@@ -185,7 +215,7 @@ void __connectHandler(void *arg) {
 	espconn_set_opt(conn, ESPCONN_NODELAY | ESPCONN_KEEPALIVE | ESPCONN_COPY);
 
 	//Clear tcpConn structure
-	RingBuffer_clear(&(_tcpConn.sendBuffer));
+	//RingBuffer_clear(&(_tcpConn.sendBuffer));
 	_tcpConn.sendCount = 0;
 }
 
@@ -225,9 +255,22 @@ void __sentHandler(void *arg) {
 	
 	conn->sendCount--;
 
+/*
+	char msg[128];
+	os_sprintf(msg, "[__sentHandler] %d\r\n", (int)conn->sendCount);
+	uart_debugSend(msg);
+*/
+
 	if((conn->sendCount < MAX_SEND_COUNT) && (conn->sendLen > 0)) {
 		uint16 sendAmt = __send(conn, conn->sendBuffer, conn->sendLen);
-		conn->sendLen -= sendAmt;
+		
+		if(sendAmt != 0) {
+			if(sendAmt != conn->sendLen) {
+				memmove(conn->sendBuffer, conn->sendBuffer + sendAmt,
+					conn->sendLen - sendAmt);
+			}
+			conn->sendLen -= sendAmt;
+		}
 
 		//char msg[128];
 		//os_sprintf(msg, "[sentHandler] Sent %d (%d)\r\n", (int)sendAmt, (int)conn->sendLen);
@@ -237,4 +280,18 @@ void __sentHandler(void *arg) {
 
 void __writeHandler(void *arg) {
 	struct Connection *conn = (struct Connection*)(((struct espconn*)arg)->reverse);
+}
+
+void __sendTimerHandler(void *arg) {
+	if((_tcpConn.sendCount < MAX_SEND_COUNT) && (_tcpConn.sendLen > 0)) {
+		uint16 sendAmt = __send(&_tcpConn, _tcpConn.sendBuffer, _tcpConn.sendLen);
+
+		if(sendAmt != 0) {
+			if(sendAmt != _tcpConn.sendLen) {
+				memmove(_tcpConn.sendBuffer, _tcpConn.sendBuffer + sendAmt,
+					_tcpConn.sendLen - sendAmt);
+			}
+			_tcpConn.sendLen -= sendAmt;
+		}
+	}
 }
