@@ -15,6 +15,7 @@
 #define TCP_RECV_BUFFER_SIZE	(10*TCP_MAX_PACKET)
 
 #define TCP_RECV_HOLD_LIMIT	(5*TCP_MAX_PACKET)
+#define TCP_TIMEOUT		(7200)
 
 #define MAX_SEND_COUNT	(2)
 
@@ -73,6 +74,7 @@ void tcp_start(uint16 port) {
 	_tcpServer.proto.tcp->local_port = port;
 	
 	espconn_regist_connectcb(&_tcpServer, &__connectHandler);
+	espconn_regist_time(&_tcpServer, TCP_TIMEOUT, ESPCONN_KEEPINTVL);
 
 	espconn_accept(&_tcpServer);
 	espconn_tcp_set_max_con(1);
@@ -210,9 +212,11 @@ void __connectHandler(void *arg) {
 	espconn_regist_recvcb(conn, &__recvHandler);
 	espconn_regist_sentcb(conn, &__sentHandler);
 	espconn_regist_write_finish(conn, &__writeHandler);
+	espconn_regist_time(conn, TCP_TIMEOUT, ESPCONN_KEEPINTVL);
+
 
 	//Set socket options
-	espconn_set_opt(conn, ESPCONN_NODELAY | ESPCONN_KEEPALIVE | ESPCONN_COPY);
+	espconn_set_opt(conn, ESPCONN_NODELAY | ESPCONN_COPY);
 
 	//Clear tcpConn structure
 	//RingBuffer_clear(&(_tcpConn.sendBuffer));
