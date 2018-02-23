@@ -8,27 +8,27 @@
 #include "user_interface.h"
 #include "espconn.h"
 #include "user_tcp.h"
+#include "driver/gpio16.h"
 #include <mem.h>
 
 #define NETWORK_UPDATE_RATE	5
+#define SWITCH_DEBOUNCE_TIME	500
 
 #define user_procTaskQueueLen    10
 
 
-#define BAUD	921600
+#define BAUD	115200
 
-#define TCP_PORT	8080
+#define TCP_PORT	288
 
-#define AP_CHANNEL	6
-#define AP_MAX_CONNECTIONS	4
-#define AP_SSID	"MicroCART"
-#define AP_PSK	"m1cr0cart"
+#define AP_MAX_CONNECTIONS	8
+#define AP_PSK	"cpre288psk"
 
-#define AP_GATEWAY	"192.168.1.1"
+#define AP_GATEWAY	"192.168.4.1"
 #define AP_NETMASK	"255.255.255.0"
 
-#define DHCP_IP_START	"192.168.1.10"
-#define DHCP_IP_END		"192.168.1.15"
+#define DHCP_IP_START	"192.168.4.10"
+#define DHCP_IP_END		"192.168.4.15"
 
 #define UART_RX_BUFFER_SIZE		(1024)
 #define UART_TX_BUFFER_SIZE		(128)
@@ -40,7 +40,11 @@ os_event_t    user_procTaskQueue[user_procTaskQueueLen];
 static void uart_task(os_event_t *events);
 static void tcp_recvHandler(uint16 len);
 
-static volatile os_timer_t networkTimer;
+static void wifi_start();
+static void wifi_stop();
+
+static volatile os_timer_t networkTimer, switchDebounceTimer;
+static int switchState, switchValid;
 static volatile uint8 _ledSet;
 
 static void wifi_handler(System_Event_t *event);
@@ -48,36 +52,119 @@ static void wifi_handler(System_Event_t *event);
 static volatile int uartCount = 0;
 static volatile uint8 _uartTxFlag;
 
+static const int ADDR_PIN_NAMES[] = {
+	PERIPHS_IO_MUX_MTMS_U,		//GPIO14
+	PERIPHS_IO_MUX_MTDI_U,		//GPIO12
+	PERIPHS_IO_MUX_MTCK_U,		//GPIO13
+	PERIPHS_IO_MUX_GPIO4_U		//GPIO4
+};
+static const int LED_PIN_NAME = PERIPHS_IO_MUX_GPIO2_U;
+static const int SWITCH_PIN_NAME = PERIPHS_IO_MUX_GPIO5_U;
+
+static const int ADDR_PIN_FUNCS[] = {
+	FUNC_GPIO14,
+	FUNC_GPIO12,
+	FUNC_GPIO13,
+	FUNC_GPIO4
+};
+static const int LED_PIN_FUNC = FUNC_GPIO2;
+static const int SWITCH_PIN_FUNC = FUNC_GPIO5;
+
+static const int ADDR_PINS[] = { 14, 12, 13, 4 };
+static const int LED_PIN = 2;
+static const int SWITCH_PIN = 5;
+
+static uint8_t WIFI_CHANNELS[] = {1, 6, 11};
+static int WIFI_CHANNEL_COUNT = 3;
+
+static void user_gpio_init() {
+	//ADDR_0 -> GPIO16
+	gpio16_input_conf();
+
+	//ADDR_1 - ADDR_4
+	int i;
+	for(i = 0; i < 4; ++i) {
+		PIN_FUNC_SELECT(ADDR_PIN_NAMES[i], ADDR_PIN_FUNCS[i]);
+		PIN_PULLUP_EN(ADDR_PIN_NAMES[i]);
+	}
+
+	//LED
+	PIN_FUNC_SELECT(LED_PIN_NAME, LED_PIN_FUNC);
+	GPIO_OUTPUT_SET(LED_PIN, 1);
+
+	//Switch
+	PIN_FUNC_SELECT(SWITCH_PIN_NAME, SWITCH_PIN_FUNC);
+}
+
+static uint8_t getDeviceID() {
+	uint8_t address = 0;
+
+	int i;
+	for(i = 0; i < 4; ++i) {
+		if(GPIO_INPUT_GET(ADDR_PINS[i])) {
+			address |= 1 << (i+1);
+		}
+	}
+	if(gpio16_input_get()) {
+		address |= 0x01;
+	}
+
+	return address;
+}
+
+static const char* getSSID() {
+	static char id[9] = {'c', 'y', 'B', 'O', 'T', ' ', 0, 0, 0};
+	
+	uint8_t idNum = getDeviceID();
+
+	if(idNum > 9) {
+		id[6] = (idNum/10) + '0';
+		id[7] = (idNum % 10) + '0';
+	}
+	else {
+		id[6] = idNum + '0';
+	}
+
+	return id;
+}
+
 void network_task(void *arg) {
 	static uint8_t ledState = 0;
-	
+
+	int switchValue = !GPIO_INPUT_GET(SWITCH_PIN);
+	if((switchValue != switchState) && switchValid) {
+		switchState = switchValue;
+		if(switchState) {
+			wifi_start();
+		}
+		else {
+			wifi_stop();
+		}
+
+		switchValid = 0;
+		_ledSet = 1;
+
+		os_timer_arm(&switchDebounceTimer, SWITCH_DEBOUNCE_TIME, 0);
+	}
+
 	if(_ledSet) {
 		ledState = 1;
 		_ledSet = 0;
 
 		//Turn on activity LED
-		gpio_output_set(BIT0, 0, BIT0, 0);
+		GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, 1 << LED_PIN);
 	}
 
 	if(ledState) {
 		if(ledState++ > 10) {
 			ledState = 0;
-			gpio_output_set(0, BIT0, BIT0, 0);
+			GPIO_REG_WRITE(GPIO_OUT_W1TS_ADDRESS, 1 << LED_PIN);
 		}
 	}
+}
 
-/*
-	static int i = 0;
-	if(i == 0) {
-		i = 100;
-
-		char msg[128];
-		os_sprintf(msg, "[Heap] %d\r\n", 
-			(int)system_get_free_heap_size());
-		uart_debugSend(msg);
-	}
-	i--;
-*/
+void switch_debounce_task() {
+	switchValid = 1;
 }
 
 //Task to process events
@@ -150,21 +237,23 @@ static void uart_task(os_event_t *events)
 		//os_delay_us(100);
 }
 
-void wifi_init() {
+void wifi_start() {
 	//Set to SoftAP mode
 	wifi_set_opmode(SOFTAP_MODE);
 
 	//SoftAP configuration
 	struct softap_config apConfig = {
-		.channel = AP_CHANNEL,
+		.channel = WIFI_CHANNELS[getDeviceID() % WIFI_CHANNEL_COUNT],
 		.authmode = AUTH_WPA2_PSK,
 		.ssid_hidden = 0,
 		.max_connection = AP_MAX_CONNECTIONS,
 		.beacon_interval = 100
 	};
-	strcpy(apConfig.ssid, AP_SSID);
+
+	const char* ssid = getSSID();
+	strcpy(apConfig.ssid, ssid);
 	strcpy(apConfig.password, AP_PSK);
-	apConfig.ssid_len = strlen(AP_SSID);
+	apConfig.ssid_len = strlen(ssid);
 
 	//Set configuration
 	wifi_softap_set_config(&apConfig);
@@ -196,6 +285,10 @@ void wifi_init() {
 
 	//Set WiFi event handler
 	wifi_set_event_handler_cb(&wifi_handler);
+}
+
+void wifi_stop() {
+	wifi_set_opmode(NULL_MODE);
 }
 
 void wifi_handler(System_Event_t *event) {
@@ -237,38 +330,38 @@ user_init()
 		// Initialize the GPIO subsystem.
     gpio_init();
 
-    //Set GPIO2 to output mode
-    PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO2_U, FUNC_GPIO2);
-
-    //Set GPIO2 low
-    gpio_output_set(0, BIT0, BIT0, 0);
-
 		//Initialize UART
 		uart_init(BAUD, BAUD);
+
+		//Initialize user GPIO pins
+		user_gpio_init();
 
 		_rxBuffer = (uint8*)os_malloc(UART_RX_BUFFER_SIZE);
 		_txBuffer = (uint8*)os_malloc(UART_TX_BUFFER_SIZE);
 
 		_uartTxFlag = 0;
 
-		//Initialize WiFi
-		wifi_init();
+		//Turn of AP
+		wifi_stop();
 
 		//Start TCP server
 		tcp_start(TCP_PORT);
 		tcp_setRecvHandler(&tcp_recvHandler);
 
 		_ledSet = 0;
+		switchState = 0;
+		switchValid = 1;
 
     //Disarm timer
     os_timer_disarm(&networkTimer);
 
     //Setup timer
     os_timer_setfn(&networkTimer, (os_timer_func_t *)network_task, NULL);
+    os_timer_setfn(&switchDebounceTimer, (os_timer_func_t *)switch_debounce_task, NULL);
 
     //Arm the timer
     os_timer_arm(&networkTimer, NETWORK_UPDATE_RATE, 1);
-    
+
     //Start os task
     system_os_task(uart_task, UART_TASK_PRIORITY,user_procTaskQueue,
 			user_procTaskQueueLen);
