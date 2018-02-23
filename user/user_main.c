@@ -101,11 +101,11 @@ static uint8_t getDeviceID() {
 
 	int i;
 	for(i = 0; i < 4; ++i) {
-		if(GPIO_INPUT_GET(ADDR_PINS[i])) {
+		if(!GPIO_INPUT_GET(ADDR_PINS[i])) {
 			address |= 1 << (i+1);
 		}
 	}
-	if(gpio16_input_get()) {
+	if(!gpio16_input_get()) {
 		address |= 0x01;
 	}
 
