@@ -55,8 +55,8 @@ static volatile uint8 _uartTxFlag;
 static const int ADDR_PIN_NAMES[] = {
 	PERIPHS_IO_MUX_MTMS_U,		//GPIO14
 	PERIPHS_IO_MUX_MTDI_U,		//GPIO12
-	PERIPHS_IO_MUX_MTCK_U,		//GPIO13
-	PERIPHS_IO_MUX_GPIO4_U		//GPIO4
+	PERIPHS_IO_MUX_GPIO4_U,		//GPIO04
+	PERIPHS_IO_MUX_MTCK_U		//GPIO13
 };
 static const int LED_PIN_NAME = PERIPHS_IO_MUX_GPIO2_U;
 static const int SWITCH_PIN_NAME = PERIPHS_IO_MUX_GPIO5_U;
@@ -64,13 +64,13 @@ static const int SWITCH_PIN_NAME = PERIPHS_IO_MUX_GPIO5_U;
 static const int ADDR_PIN_FUNCS[] = {
 	FUNC_GPIO14,
 	FUNC_GPIO12,
-	FUNC_GPIO13,
-	FUNC_GPIO4
+	FUNC_GPIO4,
+	FUNC_GPIO13
 };
 static const int LED_PIN_FUNC = FUNC_GPIO2;
 static const int SWITCH_PIN_FUNC = FUNC_GPIO5;
 
-static const int ADDR_PINS[] = { 14, 12, 13, 4 };
+static const int ADDR_PINS[] = { 14, 12, 4, 13 };
 static const int LED_PIN = 2;
 static const int SWITCH_PIN = 5;
 
@@ -78,10 +78,7 @@ static uint8_t WIFI_CHANNELS[] = {1, 6, 11};
 static int WIFI_CHANNEL_COUNT = 3;
 
 static void user_gpio_init() {
-	//ADDR_0 -> GPIO16
-	gpio16_input_conf();
-
-	//ADDR_1 - ADDR_4
+	//ADDR_0 - ADDR_3
 	int i;
 	for(i = 0; i < 4; ++i) {
 		PIN_FUNC_SELECT(ADDR_PIN_NAMES[i], ADDR_PIN_FUNCS[i]);
@@ -102,11 +99,8 @@ static uint8_t getDeviceID() {
 	int i;
 	for(i = 0; i < 4; ++i) {
 		if(!GPIO_INPUT_GET(ADDR_PINS[i])) {
-			address |= 1 << (i+1);
+			address |= 1 << i;
 		}
-	}
-	if(!gpio16_input_get()) {
-		address |= 0x01;
 	}
 
 	return address;
@@ -148,11 +142,14 @@ void network_task(void *arg) {
 	}
 
 	if(_ledSet) {
-		ledState = 1;
-		_ledSet = 0;
-
-		//Turn on activity LED
-		GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, 1 << LED_PIN);
+    if(switchState) {
+  		ledState = 1;
+			
+      //Turn on activity LED
+		  GPIO_REG_WRITE(GPIO_OUT_W1TC_ADDRESS, 1 << LED_PIN);
+    }
+    
+    _ledSet = 0;
 	}
 
 	if(ledState) {
@@ -188,8 +185,8 @@ static void uart_task(os_event_t *events)
 		case UART_SIG_RECV: {
 			static int bytesRecv = 0;
 
-			//Set the activity LED
-			_ledSet = 1;
+      //Set the activity LED
+      _ledSet = 1;
 
 			//Echo data
 			int count = uart_get((char*)_rxBuffer, UART_RX_BUFFER_SIZE);
