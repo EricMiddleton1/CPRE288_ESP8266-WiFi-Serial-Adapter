@@ -43,7 +43,7 @@ static void tcp_recvHandler(uint16 len);
 static void wifi_start();
 static void wifi_stop();
 
-static volatile os_timer_t networkTimer, switchDebounceTimer;
+static os_timer_t networkTimer, switchDebounceTimer;
 static int switchState, switchValid;
 static volatile uint8 _ledSet;
 

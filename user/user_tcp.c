@@ -38,7 +38,7 @@ static struct espconn _tcpServer;
 
 static struct Connection _tcpConn;
 
-static volatile os_timer_t _sendTimer;
+static os_timer_t _sendTimer;
 
 //Callbacks
 static void __connectHandler(void *arg);
