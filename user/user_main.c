@@ -24,11 +24,11 @@
 #define AP_MAX_CONNECTIONS	8
 #define AP_PSK	"cpre288psk"
 
-#define AP_GATEWAY	"192.168.4.1"
+#define AP_GATEWAY	"192.168.1.1"
 #define AP_NETMASK	"255.255.255.0"
 
-#define DHCP_IP_START	"192.168.4.10"
-#define DHCP_IP_END		"192.168.4.15"
+#define DHCP_IP_START	"192.168.1.2"
+#define DHCP_IP_END		"192.168.1.15"
 
 #define UART_RX_BUFFER_SIZE		(1024)
 #define UART_TX_BUFFER_SIZE		(128)
